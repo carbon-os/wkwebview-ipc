@@ -6,7 +6,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface IPC : NSObject
 
-// Call once, before loadRequest
+// Step 1: get the handler and register it on the config BEFORE creating the webview
++ (id<WKURLSchemeHandler>)schemeHandler;
+
+// Step 2: attach after webview is created (adds the injected script)
 + (void)attachToWebView:(WKWebView *)webView;
 
 // Native → JS

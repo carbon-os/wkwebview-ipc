@@ -2,8 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(wkwebview-ipc LANGUAGES C OBJC OBJCXX)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0")
-set(CMAKE_OBJC_FLAGS   "${CMAKE_OBJC_FLAGS}   -fobjc-arc")
-set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -fobjc-arc")
+set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -fobjc-arc")
 
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(WEBKIT_FRAMEWORK     WebKit     REQUIRED)

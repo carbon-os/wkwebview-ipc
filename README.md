@@ -1,44 +1,74 @@
 # wkwebview-ipc
 
 Binary IPC for WKWebView. Send and receive raw `ArrayBuffer`s between JavaScript
-and native Objective-C/C++ over named channels.
+and native Objective-C/C++ over named channels. Zero dependencies, no JSON
+serialization, no base64 — just raw bytes.
 
-Works around WKWebView's lack of native ArrayBuffer support over `WKScriptMessageHandler`
-by routing binary data through `WKURLSchemeHandler` instead. Zero dependencies,
-no JSON serialization, no base64 — just raw bytes over named channels.
+`window.ipc` is available automatically on every page — no JS files to bundle,
+no imports, no setup on the web side.
 
 Requires macOS 13.0+ / iOS 16.0+
 
 ---
 
+## Setup
+
+Register the scheme on `WKWebViewConfiguration` before the `WKWebView` is created,
+then attach after:
+
+```objc
+#import <wkwebview-ipc/IPC.h>
+
+WKWebViewConfiguration *cfg = [[WKWebViewConfiguration alloc] init];
+[cfg setURLSchemeHandler:[IPC schemeHandler] forURLScheme:@"ipc"];
+
+WKWebView *webView = [[WKWebView alloc] initWithFrame:rect configuration:cfg];
+[IPC attachToWebView:webView];
+
+[IPC on:@"data.in" handler:^(NSData *data) {
+    // raw bytes from JS
+}];
+
+[webView loadRequest:[NSURLRequest requestWithURL:
+    [NSURL URLWithString:@"ipc://app/"]]];
+```
+
+```html
+<script>
+    ipc.on("data.out", buf => {
+        const bytes = new Uint8Array(buf)
+        // interpret however you need
+    })
+
+    ipc.send("data.in", buffer)  // ArrayBuffer
+</script>
+```
+
+---
+
 ## API
 
-### JavaScript / TypeScript
+### JavaScript
 
-```ts
-import ipc from 'wkwebview-ipc'
-
-// Native → JS
-ipc.on("data.out", (buffer: ArrayBuffer) => {
+```js
+// Receive from native
+ipc.on("channel", (buffer) => {
     const bytes = new Uint8Array(buffer)
-    // interpret as whatever you need — text, binary, frames, samples
 })
 
-// JS → Native
-ipc.send("data.in", buffer)
+// Send to native
+ipc.send("channel", buffer)  // ArrayBuffer
 ```
 
 ### Objective-C
 
 ```objc
-#import <wkwebview-ipc/IPC.h>
+// Send to JS
+[IPC send:@"channel" data:data];
 
-// Native → JS
-[IPC send:@"data.out" data:data];
-
-// JS → Native
-[IPC on:@"data.in" handler:^(NSData *data) {
-    // raw bytes — interpret however you like
+// Receive from JS
+[IPC on:@"channel" handler:^(NSData *data) {
+    // raw bytes
 }];
 ```
 
@@ -47,50 +77,13 @@ ipc.send("data.in", buffer)
 ```cpp
 #include <wkwebview-ipc/ipc_cpp.h>
 
-// Native → JS
-ipc::send("data.out", ptr, len);
+// Send to JS
+ipc::send("channel", ptr, len);
 
-// JS → Native
-ipc::on("data.in", [](const void* ptr, size_t len) {
-    // raw bytes — interpret however you like
+// Receive from JS
+ipc::on("channel", [](const void* ptr, size_t len) {
+    // raw bytes
 });
-```
-
----
-
-## Setup
-
-### 1. Native
-
-Register the scheme and attach before loading any content:
-
-```objc
-WKWebViewConfiguration *cfg = [[WKWebViewConfiguration alloc] init];
-[cfg setURLSchemeHandler:[[IPCSchemeHandler alloc] init] forURLScheme:@"ipc"];
-
-self.webView = [[WKWebView alloc] initWithFrame:rect configuration:cfg];
-[IPC attachToWebView:self.webView];
-
-[self.webView loadRequest:[NSURLRequest requestWithURL:
-    [NSURL URLWithString:@"ipc://app/"]]];
-```
-
-### 2. JavaScript
-
-```bash
-npm install wkwebview-ipc
-```
-
-Or copy `js/dist/ipc.js` directly into your app bundle resources.
-
-```html
-<script type="module">
-    import ipc from './ipc.js'
-
-    ipc.on("data.out", buf => {
-        // raw ArrayBuffer — yours to decode
-    })
-</script>
 ```
 
 ---
@@ -103,7 +96,7 @@ Or copy `js/dist/ipc.js` directly into your app bundle resources.
 include(FetchContent)
 FetchContent_Declare(
     wkwebview-ipc
-    GIT_REPOSITORY https://github.com/carbon-os/wkwebview-ipc.git
+    GIT_REPOSITORY https://github.com/yourname/wkwebview-ipc.git
     GIT_TAG        main
 )
 FetchContent_MakeAvailable(wkwebview-ipc)
@@ -120,28 +113,6 @@ target_link_libraries(YourApp wkwebview-ipc)
 
 ---
 
-## How it works
-
-```
-JS ipc.send("data.in", buffer)
-  → fetch POST ipc://app/ipc/send/data.in   (ArrayBuffer body)
-  → WKURLSchemeHandler resolves body
-  → NSNotification → [IPC on:] handler
-  → your native code
-
-ipc::send("data.out", ptr, len)
-  → IPCSchemeHandler pushChannel
-  → didReceiveData on open XHR stream
-  → ipc.on("data.out") callback             (ArrayBuffer)
-  → your JS code
-```
-
-No main thread blocking. No JSON. No base64.
-The XHR stream stays open for the lifetime of the page —
-native can push bytes at any time.
-
----
-
 ## Repo structure
 
 ```
@@ -154,18 +125,40 @@ wkwebview-ipc/
     IPC.m
     IPCSchemeHandler.h
     IPCSchemeHandler.m
-  js/
-    src/
-      ipc.ts
-    dist/
-      ipc.js         — compiled (gitignored)
-      ipc.d.ts       — type declarations
-    package.json
-    tsconfig.json
   CMakeLists.txt
   README.md
   BUILD.md
 ```
+
+---
+
+## How it works
+
+Data flows through `WKURLSchemeHandler` rather than the standard WebKit JS bridge.
+The standard bridge (`WKScriptMessageHandler` / `evaluateJavaScript`) requires all
+calls to go through the main thread, blocks until WebKit processes each message,
+and has no native ArrayBuffer support — binary data must be base64 encoded to cross it.
+
+`WKURLSchemeHandler` has none of those constraints. Handlers fire on a background
+GCD thread. The WebContent process where JS runs is a separate OS process with its
+own thread budget — your app's main thread is only involved for the brief
+`didReceiveData` call, nothing else.
+
+```
+native (GCD background)     main thread          WebContent process
+───────────────────────     ───────────          ──────────────────
+data arrives
+  → IPC::send()
+    → pushChannel()
+      → dispatch_async ───→ didReceiveData()
+                             (microseconds)
+                                   │
+                                   └──────────────→ XHR onprogress
+                                                    ipc.on() callback
+```
+
+The VM, LLM inference loop, audio pipeline, or any other native workload runs
+independently on its own threads and never competes with the UI or the JS runtime.
 
 ---
 

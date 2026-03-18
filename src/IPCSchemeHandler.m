@@ -29,10 +29,51 @@
 }
 
 - (void)webView:(WKWebView *)wv startURLSchemeTask:(id<WKURLSchemeTask>)task {
-    NSArray  *parts   = task.request.URL.pathComponents;
-    if (parts.count < 4) { [task didFinish]; return; }
+    NSString *path  = task.request.URL.path;
+    NSArray  *parts = task.request.URL.pathComponents;
 
-    NSString *verb    = parts[2]; // "stream" or "send"
+    // ── Static resources ──────────────────────────────────────────────
+    if (![path hasPrefix:@"/ipc/"]) {
+        NSString *file    = [path isEqualToString:@"/"] ? @"index.html" : [path lastPathComponent];
+        NSString *resPath = [NSBundle.mainBundle.resourcePath
+                             stringByAppendingPathComponent:file];
+
+        NSLog(@"[ipc] static: %@", resPath);
+
+        NSData *body = [NSData dataWithContentsOfFile:resPath];
+        if (!body) {
+            [task didReceiveResponse:[self responseForURL:task.request.URL
+                                             contentType:@"text/plain"
+                                              statusCode:404]];
+            [task didReceiveData:[@"Not found" dataUsingEncoding:NSUTF8StringEncoding]];
+            [task didFinish];
+            return;
+        }
+
+        NSString *mime = @"text/plain";
+        if ([file hasSuffix:@".html"]) mime = @"text/html; charset=utf-8";
+        if ([file hasSuffix:@".js"])   mime = @"application/javascript";
+        if ([file hasSuffix:@".css"])  mime = @"text/css";
+
+        [task didReceiveResponse:[self responseForURL:task.request.URL
+                                         contentType:mime
+                                          statusCode:200]];
+        [task didReceiveData:body];
+        [task didFinish];
+        return;
+    }
+
+    // ── IPC routes ────────────────────────────────────────────────────
+    if (parts.count < 4) {
+        [task didReceiveResponse:[self responseForURL:task.request.URL
+                                         contentType:@"text/plain"
+                                          statusCode:400]];
+        [task didReceiveData:[@"bad request" dataUsingEncoding:NSUTF8StringEncoding]];
+        [task didFinish];
+        return;
+    }
+
+    NSString *verb    = parts[2]; // "send" or "stream"
     NSString *channel = parts[3];
 
     // ── JS → Native ───────────────────────────────────────────────────
@@ -45,7 +86,8 @@
                 userInfo:@{@"data": body}];
 
         [task didReceiveResponse:[self responseForURL:task.request.URL
-                                          contentType:@"text/plain"]];
+                                         contentType:@"text/plain"
+                                          statusCode:200]];
         [task didReceiveData:[@"OK" dataUsingEncoding:NSUTF8StringEncoding]];
         [task didFinish];
     }
@@ -53,7 +95,8 @@
     // ── Native → JS ───────────────────────────────────────────────────
     else if ([verb isEqualToString:@"stream"]) {
         [task didReceiveResponse:[self responseForURL:task.request.URL
-                                          contentType:@"application/octet-stream"]];
+                                         contentType:@"application/octet-stream"
+                                          statusCode:200]];
         self.streamTasks[channel] = task;
 
         NSMutableData *pending = self.pendingBuffers[channel];
@@ -61,6 +104,15 @@
             [task didReceiveData:pending];
             [self.pendingBuffers removeObjectForKey:channel];
         }
+    }
+
+    // ── Unknown ───────────────────────────────────────────────────────
+    else {
+        [task didReceiveResponse:[self responseForURL:task.request.URL
+                                         contentType:@"text/plain"
+                                          statusCode:400]];
+        [task didReceiveData:[@"unknown verb" dataUsingEncoding:NSUTF8StringEncoding]];
+        [task didFinish];
     }
 }
 
@@ -100,10 +152,12 @@
     return [NSData data];
 }
 
-- (NSHTTPURLResponse *)responseForURL:(NSURL *)url contentType:(NSString *)contentType {
+- (NSHTTPURLResponse *)responseForURL:(NSURL *)url
+                          contentType:(NSString *)contentType
+                           statusCode:(NSInteger)statusCode {
     return [[NSHTTPURLResponse alloc]
         initWithURL:url
-         statusCode:200
+         statusCode:statusCode
         HTTPVersion:@"HTTP/1.1"
        headerFields:@{
            @"Content-Type":  contentType,
