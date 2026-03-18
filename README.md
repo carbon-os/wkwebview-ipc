@@ -103,7 +103,7 @@ Or copy `js/dist/ipc.js` directly into your app bundle resources.
 include(FetchContent)
 FetchContent_Declare(
     wkwebview-ipc
-    GIT_REPOSITORY https://github.com/yourname/wkwebview-ipc.git
+    GIT_REPOSITORY https://github.com/carbon-os/wkwebview-ipc.git
     GIT_TAG        main
 )
 FetchContent_MakeAvailable(wkwebview-ipc)
